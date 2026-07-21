@@ -14,7 +14,7 @@
              SetTitleBar (also code-behind) makes it draggable. Ported from
              WorldClockTray's SettingsWindow. -->
         <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent">
-            <TextBlock Text="Clipboard History Settings" VerticalAlignment="Center" Margin="16,0,0,0"
+            <TextBlock Text="Re:Call Settings" VerticalAlignment="Center" Margin="16,0,0,0"
                        Style="{StaticResource CaptionTextBlockStyle}"/>
         </Grid>
 
