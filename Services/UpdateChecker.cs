@@ -47,7 +47,17 @@ public static class UpdateChecker
         {
             using var response = await Http.GetAsync($"https://api.github.com/repos/{Owner}/{Repo}/releases/latest");
             if (!response.IsSuccessStatusCode)
-                return new Result(false, false, null, null, $"GitHub returned {(int)response.StatusCode}.");
+            {
+                // GitHub's "latest release" endpoint returns 404 both when the
+                // repo doesn't exist AND (more commonly, since this repo does
+                // exist) when it exists but has no *published* releases yet -
+                // draft/pre-release-only repos hit this too. Give a message
+                // that points at the actual cause instead of a bare status code.
+                var message = response.StatusCode == System.Net.HttpStatusCode.NotFound
+                    ? "No published releases found yet."
+                    : $"GitHub returned {(int)response.StatusCode}.";
+                return new Result(false, false, null, null, message);
+            }
 
             await using var stream = await response.Content.ReadAsStreamAsync();
             using var doc = await JsonDocument.ParseAsync(stream);
