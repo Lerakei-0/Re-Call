@@ -1,0 +1,81 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Re-merging XamlControlsResources here (it's already merged once in
+         App.xaml) works around a known WinUI3 bug: a ThemeResource lookup
+         from within a *separately merged* dictionary can fail to find keys
+         that live inside XamlControlsResources, even though it's merged
+         first at the App level. See
+         https://github.com/microsoft/microsoft-ui-xaml/issues/8629. Needed
+         here because SettingsCard (CommunityToolkit.WinUI.Controls) pulls
+         its default style from a separately-merged dictionary of its own. -->
+    <ResourceDictionary.MergedDictionaries>
+        <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls"/>
+    </ResourceDictionary.MergedDictionaries>
+
+    <!-- Everything else (card fills, borders, control theming, accent
+         color) comes straight from WinUI3's built-in Fluent 2 theme
+         resources (ThemeResource CardBackgroundFillColorDefaultBrush, etc.).
+         This dictionary only needs to add the one thing WinUI3 doesn't ship
+         out of the box: the settings-page section header look. Ported from
+         WorldClockTray's Styles/Controls.xaml. -->
+    <Style x:Key="SettingsSectionHeaderStyle" TargetType="TextBlock">
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
+    </Style>
+
+    <!-- Matches the native Windows 11 Notification Center's "Clear all"
+         chip. Deliberately does NOT override ButtonBackground /
+         ButtonForeground / etc: the native chip is just a standard Fluent2
+         subtle button (DefaultButtonStyle), which already adapts correctly
+         between light and dark theme (in dark theme it's a translucent
+         gray, not a fixed near-white fill — confirmed by sampling pixels
+         from a real screenshot of the native panel, rgb ~55,39,64 with
+         light text). Re-using the same ButtonBackground/ButtonForeground
+         theme resources the OS shell uses is what actually makes this look
+         native, rather than hand-picking colors that fight the theme.
+
+         IMPORTANT: BorderThickness is intentionally left at the default
+         (do NOT set it to 0). DefaultButtonStyle's border isn't a flat
+         color, it's ButtonBorderBrush — a two-stop "elevation" gradient
+         (ControlStrokeColorDefaultBrush) that's lighter on top / darker on
+         bottom, which is exactly what reads as the subtle edge on the
+         native chip sitting on the acrylic panel. Setting BorderThickness
+         to 0 (as an earlier version of this style did) silently removes
+         that edge — that was the missing "border" reported.
+
+         No shadow here on purpose: buttons don't get an automatic drop
+         shadow from DefaultButtonStyle, and the native chip itself reads
+         as flat (no visible shadow) — it's the elevation border above that
+         does the visual work. If you genuinely want a cast shadow, that
+         requires an explicit <Style.Resources><ThemeShadow x:Key="..."/>
+         plus setting Shadow="{StaticResource ...}" AND giving the button a
+         Z-axis Translation in code-behind (shadows require real depth
+         separation, not just the property). Ask if you want that added.
+
+         Only layout is customized: shorter/denser than the default button
+         so it reads as a small "chip" instead of a full-size button. -->
+    <Style x:Key="ClearAllChipButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="CornerRadius" Value="4"/>
+    </Style>
+
+    <!-- Same generic Fluent2 look as ClearAllChipButtonStyle above (still
+         DefaultButtonStyle underneath, so it gets the same theme-adaptive
+         background fill and elevation-gradient border), just square
+         instead of text-width: for icon-only buttons that should read as
+         siblings of the "Clear all" chip rather than a borderless glyph
+         floating next to it. -->
+    <Style x:Key="IconChipButtonStyle" TargetType="Button" BasedOn="{StaticResource DefaultButtonStyle}">
+        <Setter Property="Width" Value="24"/>
+        <Setter Property="Height" Value="24"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="CornerRadius" Value="4"/>
+    </Style>
+
+</ResourceDictionary>

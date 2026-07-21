@@ -1,0 +1,61 @@
+<Window
+    x:Class="ReCall.UI.SettingsWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid x:Name="RootGrid">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar: ExtendsContentIntoTitleBar is set in
+             code-behind, so this row is what actually draws the titlebar;
+             SetTitleBar (also code-behind) makes it draggable. Ported from
+             WorldClockTray's SettingsWindow. -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent">
+            <TextBlock Text="Clipboard History Settings" VerticalAlignment="Center" Margin="16,0,0,0"
+                       Style="{StaticResource CaptionTextBlockStyle}"/>
+        </Grid>
+
+        <NavigationView x:Name="Nav" Grid.Row="1"
+                        RenderTransformOrigin="0.5,0.5"
+                        PaneDisplayMode="Auto"
+                        OpenPaneLength="220"
+                        CompactModeThresholdWidth="640"
+                        CompactPaneLength="48"
+                        IsBackButtonVisible="Collapsed"
+                        IsSettingsVisible="False"
+                        SelectionChanged="OnNavSelectionChanged">
+            <NavigationView.RenderTransform>
+                <ScaleTransform/>
+            </NavigationView.RenderTransform>
+            <NavigationView.MenuItems>
+                <!-- Icons are Segoe Fluent Icons glyphs (built into Windows
+                     11), same glyphs as Kronos's SettingsWindow for the
+                     tabs the two apps share. -->
+                <NavigationViewItem Content="Appearance" Tag="appearance" IsSelected="True">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE790;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="Shortcuts" Tag="shortcuts">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE765;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+                <NavigationViewItem Content="About" Tag="about">
+                    <NavigationViewItem.Icon>
+                        <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xE946;"/>
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
+            </NavigationView.MenuItems>
+
+            <Grid>
+                <ScrollViewer x:Name="AppearanceHost" Padding="24" Visibility="Visible"/>
+                <ScrollViewer x:Name="ShortcutsHost" Padding="24" Visibility="Collapsed"/>
+                <ScrollViewer x:Name="AboutHost" Padding="24" Visibility="Collapsed"/>
+            </Grid>
+        </NavigationView>
+    </Grid>
+</Window>

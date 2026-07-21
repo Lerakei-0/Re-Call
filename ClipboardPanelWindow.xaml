@@ -1,0 +1,813 @@
+<Window
+    x:Class="ReCall.ClipboardPanelWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:ReCall"
+    xmlns:models="using:ReCall.Models">
+
+    <!-- Resources live on RootPanel (a Grid) rather than on Window itself:
+         in WinUI 3, Window is not a FrameworkElement and has no Resources
+         property (unlike WPF), so a Window.Resources block fails to
+         compile with XamlCompiler error WMC0011. Any descendant, such as
+         this root Grid, can hold the dictionary instead — StaticResource
+         lookups from further down the tree (e.g. Styles/Controls.xaml's
+         ClearAllChipButtonStyle/IconChipButtonStyle merged at the
+         Application level, or ClipboardItemTemplate/ClipboardItemContainerStyle
+         defined here) still resolve normally by walking up to it.
+
+         RootPanel's Background is left null; the Acrylic backdrop (applied
+         in code-behind, WindowEffects.ApplyAcrylicBackdrop) paints behind
+         it and stays attached for the whole slide animation. -->
+    <Grid x:Name="RootPanel">
+    <Grid.Resources>
+        <Style x:Key="ClipboardItemContainerStyle" TargetType="ListViewItem">
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="Padding" Value="0"/>
+        </Style>
+
+        <!-- Shared row template for both PinnedList and HistoryList (see
+             ClipboardPanelWindow.xaml.cs: PinnedItems/UnpinnedItems are
+             two independent ObservableCollections now, one per ListView,
+             instead of one combined FilteredItems). Pulled out to a shared
+             resource rather than declared twice so a future tweak to the
+             row layout only has to happen once. -->
+        <DataTemplate x:Key="ClipboardItemTemplate" x:DataType="local:ClipboardItem">
+            <Grid PointerEntered="OnItemPointerEntered"
+                  PointerExited="OnItemPointerExited"
+                  ContextRequested="OnItemContextRequested"
+                  Tag="{x:Bind}"
+                  Margin="0,2,0,2"
+                  MinHeight="68">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="42"/>
+                </Grid.ColumnDefinitions>
+
+                <Border x:Name="RowHighlight"
+                        Grid.ColumnSpan="2"
+                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                        CornerRadius="4"
+                        Opacity="0"/>
+
+                <!-- Content column only occupies the width left over once the
+                     32px button-stack column (right) is reserved, so text/images
+                     wrap within that space instead of ever rendering underneath
+                     the X/pin buttons. -->
+                <Button Grid.Column="0"
+                        Click="OnItemClicked"
+                        Tag="{x:Bind}"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="6">
+                    <Button.Resources>
+                        <SolidColorBrush x:Key="ButtonBackground" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent"/>
+                    </Button.Resources>
+                    <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch">
+                        <!-- Text row: a small color swatch (only shown when the
+                             text is a recognized color value: hex, rgb()/rgba(),
+                             hsl()/hsla(), a CSS named color, or a
+                             linear-gradient()/radial-gradient() string, see
+                             ClipboardItem.IsColorValue/IsGradientValue) sits to
+                             the left of the text itself. For gradients the swatch
+                             renders the actual gradient (via ColorBrush) rather
+                             than a flat fill. -->
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="10"
+                                    Visibility="{x:Bind IsText}">
+                            <Border Width="28" Height="28"
+                                    CornerRadius="6"
+                                    Background="{x:Bind ColorBrush}"
+                                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    Visibility="{x:Bind ColorSwatchVisibility}"
+                                    VerticalAlignment="Top"
+                                    Margin="0,1,0,0">
+                                <!-- Right-click (or press-and-hold) the swatch to
+                                     copy this color in a different format: see
+                                     OnCopyColorAsClicked, which reads the target
+                                     item off the item's own Tag and the requested
+                                     format off each item's CommandParameter. -->
+                                <Border.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Copy as HEX"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hex"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as RGB"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="rgb"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as RGBA"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="rgba"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as HSL"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hsl"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as HSLA"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hsla"
+                                                        Click="OnCopyColorAsClicked"/>
+                                    </MenuFlyout>
+                                </Border.ContextFlyout>
+                            </Border>
+                            <TextBlock Text="{x:Bind Text}"
+                                       TextWrapping="Wrap"
+                                       MaxLines="3"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Top"/>
+                        </StackPanel>
+                        <Grid Visibility="{x:Bind IsImage}">
+                            <Image Source="{x:Bind Image}"
+                                   Stretch="Uniform"
+                                   MaxHeight="120"
+                                   HorizontalAlignment="Stretch" />
+                            <!-- Dimensions/size badge, e.g. "1920x1080 · 340 KB":
+                                 see ClipboardItem.ImageInfoDisplay. Pinned to the
+                                 thumbnail's own bottom-right corner rather than
+                                 the row's, so it still reads correctly for
+                                 narrower (portrait) screenshots. -->
+                            <Border Background="#99000000"
+                                    CornerRadius="4"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Margin="0,0,6,6"
+                                    Visibility="{x:Bind ImageInfoVisibility}">
+                                <TextBlock Text="{x:Bind ImageInfoDisplay}"
+                                           FontSize="10"
+                                           Foreground="White"/>
+                            </Border>
+                        </Grid>
+                        <TextBlock Text="{x:Bind TimestampDisplay}"
+                                   FontSize="11"
+                                   Opacity="0.6"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- Reserved button-stack column: X on top, pin below. Both live
+                     in their own column (not overlaid on the content) and are
+                     toggled together on hover in code-behind. -->
+                <StackPanel Grid.Column="1"
+                            Orientation="Vertical"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Spacing="4"
+                            Margin="0,8,8,0">
+                    <Button x:Name="RemoveButton"
+                            Click="OnRemoveItemClicked"
+                            Tag="{x:Bind}"
+                            Content="&#xE711;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="11"
+                            Width="24"
+                            Height="24"
+                            Padding="0"
+                            CornerRadius="4"
+                            Opacity="0"
+                            IsHitTestVisible="False"/>
+
+                    <!-- Content, Opacity and IsHitTestVisible are data-bound
+                         (Mode=OneWay) rather than set once: IsPinned raises
+                         PropertyChanged, so this swaps between the Pin/UnPin glyph
+                         and stays visible once pinned even after the pointer
+                         leaves the row (see OnItemPointerExited, which only fades
+                         it back out when the item isn't pinned). The button is
+                         always Visibility="Visible" (the default), so it always
+                         occupies its layout slot in the reserved button-stack
+                         column, so showing/hiding it on hover never changes the
+                         row's height. -->
+                    <Button x:Name="PinButton"
+                            Click="OnPinItemClicked"
+                            Tag="{x:Bind}"
+                            Content="{x:Bind PinGlyph, Mode=OneWay}"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="11"
+                            Width="24"
+                            Height="24"
+                            Padding="0"
+                            CornerRadius="4"
+                            Opacity="{x:Bind PinOpacity, Mode=OneWay}"
+                            IsHitTestVisible="{x:Bind IsPinned, Mode=OneWay}"/>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <!-- PinnedList-only variant of ClipboardItemTemplate above: same
+             row, plus a grip column on the left for drag-reordering.
+             Kept as its own template (rather than adding a
+             collapsed-for-history grip column to the shared one) since
+             the grip and its drag behavior are meaningless on
+             HistoryList, which never reorders. -->
+        <DataTemplate x:Key="PinnedItemTemplate" x:DataType="local:ClipboardItem">
+            <Grid PointerEntered="OnItemPointerEntered"
+                  PointerExited="OnItemPointerExited"
+                  ContextRequested="OnItemContextRequested"
+                  Tag="{x:Bind}"
+                  Margin="0,2,0,2"
+                  MinHeight="68">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="42"/>
+                </Grid.ColumnDefinitions>
+
+                <Border x:Name="RowHighlight"
+                        Grid.ColumnSpan="3"
+                        Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                        CornerRadius="4"
+                        Opacity="0"/>
+
+                <!-- Grip: purely visual now. Reordering is driven by
+                     PinnedList's own built-in CanReorderItems/AllowDrop drag
+                     (see PinnedList below), which recognizes a
+                     press-and-drag started anywhere on the row/item
+                     container, not just this column. Left in place as a
+                     visual cue for where/how to grab the row, and because
+                     its 28px column still reserves layout space so the
+                     content column doesn't shift when switching between
+                     templates. -->
+                <Grid Grid.Column="0"
+                      Width="28"
+                      Background="Transparent">
+                    <Grid HorizontalAlignment="Center"
+                          VerticalAlignment="Center"
+                          ColumnSpacing="4"
+                          RowSpacing="4"
+                          IsHitTestVisible="False">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Ellipse Grid.Row="0" Grid.Column="0" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Ellipse Grid.Row="0" Grid.Column="1" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Ellipse Grid.Row="1" Grid.Column="0" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Ellipse Grid.Row="1" Grid.Column="1" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Ellipse Grid.Row="2" Grid.Column="0" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                        <Ellipse Grid.Row="2" Grid.Column="1" Width="3" Height="3" Fill="{ThemeResource TextFillColorSecondaryBrush}"/>
+                    </Grid>
+                </Grid>
+
+                <!-- Content column only occupies the width left over once the
+                     grip column (left) and 42px button-stack column (right)
+                     are reserved, so text/images wrap within that space
+                     instead of ever rendering underneath them. -->
+                <Button Grid.Column="1"
+                        Click="OnItemClicked"
+                        Tag="{x:Bind}"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        Background="Transparent"
+                        BorderThickness="0"
+                        Padding="6">
+                    <Button.Resources>
+                        <SolidColorBrush x:Key="ButtonBackground" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                        <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent"/>
+                    </Button.Resources>
+                    <StackPanel Orientation="Vertical" HorizontalAlignment="Stretch">
+                        <StackPanel Orientation="Horizontal"
+                                    Spacing="10"
+                                    Visibility="{x:Bind IsText}">
+                            <Border Width="28" Height="28"
+                                    CornerRadius="6"
+                                    Background="{x:Bind ColorBrush}"
+                                    BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
+                                    BorderThickness="1"
+                                    Visibility="{x:Bind ColorSwatchVisibility}"
+                                    VerticalAlignment="Top"
+                                    Margin="0,1,0,0">
+                                <Border.ContextFlyout>
+                                    <MenuFlyout>
+                                        <MenuFlyoutItem Text="Copy as HEX"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hex"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as RGB"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="rgb"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as RGBA"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="rgba"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as HSL"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hsl"
+                                                        Click="OnCopyColorAsClicked"/>
+                                        <MenuFlyoutItem Text="Copy as HSLA"
+                                                        Tag="{x:Bind}"
+                                                        CommandParameter="hsla"
+                                                        Click="OnCopyColorAsClicked"/>
+                                    </MenuFlyout>
+                                </Border.ContextFlyout>
+                            </Border>
+                            <TextBlock Text="{x:Bind Text}"
+                                       TextWrapping="Wrap"
+                                       MaxLines="3"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Top"/>
+                        </StackPanel>
+                        <Grid Visibility="{x:Bind IsImage}">
+                            <Image Source="{x:Bind Image}"
+                                   Stretch="Uniform"
+                                   MaxHeight="120"
+                                   HorizontalAlignment="Stretch" />
+                            <Border Background="#99000000"
+                                    CornerRadius="4"
+                                    Padding="6,2"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Bottom"
+                                    Margin="0,0,6,6"
+                                    Visibility="{x:Bind ImageInfoVisibility}">
+                                <TextBlock Text="{x:Bind ImageInfoDisplay}"
+                                           FontSize="10"
+                                           Foreground="White"/>
+                            </Border>
+                        </Grid>
+                        <TextBlock Text="{x:Bind TimestampDisplay}"
+                                   FontSize="11"
+                                   Opacity="0.6"
+                                   Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- Reserved button-stack column: X on top, pin below. Both live
+                     in their own column (not overlaid on the content) and are
+                     toggled together on hover in code-behind. -->
+                <StackPanel Grid.Column="2"
+                            Orientation="Vertical"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Top"
+                            Spacing="4"
+                            Margin="0,8,8,0">
+                    <Button x:Name="RemoveButton"
+                            Click="OnRemoveItemClicked"
+                            Tag="{x:Bind}"
+                            Content="&#xE711;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="11"
+                            Width="24"
+                            Height="24"
+                            Padding="0"
+                            CornerRadius="4"
+                            Opacity="0"
+                            IsHitTestVisible="False"/>
+
+                    <Button x:Name="PinButton"
+                            Click="OnPinItemClicked"
+                            Tag="{x:Bind}"
+                            Content="{x:Bind PinGlyph, Mode=OneWay}"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            FontSize="11"
+                            Width="24"
+                            Height="24"
+                            Padding="0"
+                            CornerRadius="4"
+                            Opacity="{x:Bind PinOpacity, Mode=OneWay}"
+                            IsHitTestVisible="{x:Bind IsPinned, Mode=OneWay}"/>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+    </Grid.Resources>
+
+        <!-- Grain overlay. Declared first (before Container) so it paints
+             just above the Acrylic backdrop set in code-behind
+             (WindowEffects.ApplyAcrylicBackdrop, which renders behind
+             RootPanel entirely) but underneath Container's content: the
+             grain shows through any transparent/translucent parts of the
+             panel chrome, and gets covered by opaque content (header text,
+             list item backgrounds, images, the footer plate, etc.) instead
+             of smearing across all of it. Source is generated at runtime
+             (see WindowEffects.RegenerateNoise) sized exactly to the
+             panel's current pixel dimensions: a static asset stretched to
+             fit blows single texels up into visible blobs at any size much
+             bigger than the source, which is what made the first pass look
+             too coarse. Stretch="None" so it's never resampled after being
+             generated at the right size to begin with. -->
+        <Image x:Name="NoiseOverlay"
+               Stretch="None"
+               HorizontalAlignment="Left"
+               VerticalAlignment="Top"
+               IsHitTestVisible="False"/>
+
+        <Border x:Name="Container" Padding="10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="4,4,4,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="Re:Call"
+                               FontSize="16"
+                               FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <Button Grid.Column="1"
+                            Click="OnClearAllClicked"
+                            Content="Clear all"
+                            Style="{StaticResource ClearAllChipButtonStyle}"/>
+
+                    <!-- Panel-level pin: keeps the whole panel open (no
+                         click-away close, no auto-close after copying an
+                         item) and on top of every other window, as opposed
+                         to ClipboardItem's per-row pin further down which
+                         only protects one history entry from Clear
+                         all/trim. Glyph-only, same E718/E77A Pin/UnPin pair
+                         as the per-item pin button, but styled with
+                         IconChipButtonStyle (same DefaultButtonStyle base
+                         as "Clear all" beside it) rather than a transparent
+                         borderless glyph, so the two header buttons read as
+                         a matched pair instead of one looking like it
+                         belongs and the other floating on its own. -->
+                    <Button x:Name="PinPanelButton"
+                            Grid.Column="2"
+                            Click="OnPinPanelClicked"
+                            Content="&#xE718;"
+                            FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                            Margin="6,0,0,0"
+                            Style="{StaticResource IconChipButtonStyle}"
+                            ToolTipService.ToolTip="Keep panel open"/>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Height="1"
+                        Margin="-10,6,-10,8"
+                        Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
+                <!-- Row 2 now splits pinned items out into their own
+                     always-visible section on top, with everything else
+                     scrolling underneath it, rather than one combined
+                     list where pinning just meant "moves to the top,
+                     still scrolls away like everything else". -->
+                <Grid Grid.Row="2">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Sticky pinned section: Auto-height, so it grows to
+                         exactly as tall as however many pinned items exist,
+                         uncapped — its own ScrollViewer is disabled outright
+                         (both Mode and BarVisibility) rather than given a
+                         MaxHeight, so it never clips or scrolls internally;
+                         a long run of pins just keeps growing and pushes
+                         HistoryList's row (below, Height="*") down instead.
+                         Not wired up to the same fit-to-content Loaded
+                         plumbing HistoryList uses (OnHistoryListLoaded/
+                         ShowScrollBar/etc.): that's specifically about
+                         hiding/revealing the scrollbar on hover, which no
+                         longer applies here now that this list never shows
+                         one.
+
+                         Reordering (press-drag anywhere on a row -> other
+                         rows slide out of the way) now uses the ListView's
+                         own built-in CanReorderItems/AllowDrop drag rather
+                         than a hand-rolled grip drag: since PinnedItems is
+                         an IList (ObservableCollection), the ListView moves
+                         items on it directly as the drag crosses
+                         neighbors, and the "other items slide out of the
+                         way" animation comes from the same reposition
+                         transition SyncCollection's Move calls already
+                         rely on elsewhere in this file. CanDragItems isn't
+                         set (defaults false), which keeps a drag from
+                         being draggable *out* of this list — combined with
+                         HistoryList not opting into drop, a pinned row has
+                         nowhere to go but back into this list, keeping
+                         moves confined to the pinned section.
+                         DragItemsCompleted (OnPinnedListDragItemsCompleted
+                         in the code-behind) fires once the drop settles,
+                         to persist the new order back into Items and
+                         disk. -->
+                    <ListView Grid.Row="0"
+                              x:Name="PinnedList"
+                              ItemsSource="{x:Bind PinnedItems}"
+                              ItemTemplate="{StaticResource PinnedItemTemplate}"
+                              ItemContainerStyle="{StaticResource ClipboardItemContainerStyle}"
+                              CanReorderItems="True"
+                              AllowDrop="True"
+                              DragItemsCompleted="OnPinnedListDragItemsCompleted"
+                              ScrollViewer.VerticalScrollMode="Disabled"
+                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                              ScrollViewer.HorizontalScrollMode="Disabled"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                              SelectionMode="None"/>
+
+                    <!-- Divider between the pinned section and the
+                         scrolling history below it. Shown only once there's
+                         actually a pinned item above AND something unpinned
+                         below to separate it from: same condition the old
+                         per-row separator used (see
+                         ClipboardPanelWindow.PinnedDividerVisibility), just
+                         evaluated once for the whole panel now that the two
+                         groups live in separate ListViews instead of one. -->
+                    <Border Grid.Row="1"
+                            Height="1"
+                            Margin="4,6,4,6"
+                            Background="{ThemeResource DividerStrokeColorDefaultBrush}"
+                            Visibility="{x:Bind PinnedDividerVisibility(PinnedItems.Count, UnpinnedItems.Count), Mode=OneWay}"/>
+
+                    <!-- Shares Grid.Row="2" (of this inner Grid) with the
+                         ListView below rather than wrapping both in yet
+                         another Grid: Visibility is a plain x:Bind function
+                         call, so it reacts live to every add/remove without
+                         any code-behind wiring (ObservableCollection
+                         already raises PropertyChanged("Count") on every
+                         mutation). -->
+                    <TextBlock Grid.Row="2"
+                               Text="{x:Bind EmptyStateText(PinnedItems.Count, UnpinnedItems.Count, Items.Count), Mode=OneWay}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Opacity="0.5"
+                               Visibility="{x:Bind EmptyStateVisibility(PinnedItems.Count, UnpinnedItems.Count), Mode=OneWay}"/>
+
+                    <ListView Grid.Row="2"
+                              x:Name="HistoryList"
+                              ItemsSource="{x:Bind UnpinnedItems}"
+                              ItemTemplate="{StaticResource ClipboardItemTemplate}"
+                              ItemContainerStyle="{StaticResource ClipboardItemContainerStyle}"
+                              SelectionMode="None"
+                              Loaded="OnHistoryListLoaded"/>
+
+                    <!-- Floating jump-to-top button: shares Grid.Row="2"
+                         (of this inner Grid) with HistoryList (Grid stacks
+                         same-cell children by declaration order, so being
+                         declared after the ListView puts it on top). Starts
+                         fully transparent and hit-test-inert;
+                         OnScrollToTopClicked/UpdateScrollToTopButton-
+                         Visibility in code-behind fade it in once the list
+                         has been scrolled down past ScrollToTopThreshold. -->
+                    <Button x:Name="ScrollToTopButton"
+                            Grid.Row="2"
+                            Width="34"
+                            Height="34"
+                            Padding="0"
+                            CornerRadius="10"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,10,10"
+                            Opacity="0"
+                            IsHitTestVisible="False"
+                            Click="OnScrollToTopClicked">
+                        <FontIcon Glyph="&#xE74A;" FontSize="15"/>
+                    </Button>
+                </Grid>
+
+                <!-- Folders bar: sticky strip between the scrolling content
+                     and the search footer, one chip per user-created folder
+                     (see Models/ClipboardFolder.cs). Unlike the footer below
+                     it, this one stays inset within Container's own
+                     Padding="10" (no negative margins pulling it out to the
+                     window edge) and gets its own CornerRadius, so it reads
+                     as a distinct rounded card floating just above the
+                     footer rather than a third flush chrome band.
+                     Only occupies layout space once a folder actually
+                     exists: Visibility is an x:Bind function call against
+                     Folders.Count (ObservableCollection already raises
+                     PropertyChanged("Count") on every add/remove, same
+                     technique as EmptyStateVisibility above), so it
+                     collapses to nothing rather than showing an empty
+                     strip for users who've never made a folder. -->
+                <Border x:Name="FoldersBarBorder"
+                        Grid.Row="3"
+                        Margin="0,8,0,0"
+                        Padding="10,8"
+                        CornerRadius="10"
+                        BorderThickness="1"
+                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                        Background="{ThemeResource LayerOnAcrylicFillColorDefaultBrush}"
+                        Visibility="Collapsed">
+                    <ScrollViewer HorizontalScrollMode="Auto"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  VerticalScrollMode="Disabled"
+                                  VerticalScrollBarVisibility="Disabled">
+                        <ItemsControl x:Name="FoldersBar" ItemsSource="{x:Bind Folders}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="6"/>
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="models:ClipboardFolder">
+                                    <!-- Clicking a chip navigates into that
+                                         folder's own page in-place (see
+                                         ClipboardPanelWindow.EnterFolder);
+                                         this bar itself gets replaced by
+                                         FolderHeaderBorder below for as long
+                                         as a folder page is open, so there's
+                                         no "currently selected" chip state to
+                                         highlight here anymore.
+                                         Each chip is just the folder glyph,
+                                         tinted per-folder via Brush (see
+                                         Models/ClipboardFolder.cs Color/
+                                         Palette, set from the swatch picker
+                                         in CreateFolderViaDialogAsync/
+                                         RenameFolderAsync); the name itself
+                                         only surfaces as a tooltip on hover,
+                                         so a row of folders reads as a
+                                         compact strip of colored icons
+                                         rather than a wrapping row of
+                                         name chips. -->
+                                    <Grid>
+                                        <Button Tag="{x:Bind}"
+                                                Click="OnFolderChipClicked"
+                                                ContextRequested="OnFolderChipContextRequested"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                CornerRadius="14"
+                                                Padding="10,7"
+                                                ToolTipService.ToolTip="{x:Bind Name, Mode=OneWay}">
+                                            <Button.Resources>
+                                                <SolidColorBrush x:Key="ButtonBackground" Color="Transparent"/>
+                                                <SolidColorBrush x:Key="ButtonBackgroundPointerOver" Color="Transparent"/>
+                                                <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="Transparent"/>
+                                                <SolidColorBrush x:Key="ButtonBorderBrush" Color="Transparent"/>
+                                                <SolidColorBrush x:Key="ButtonBorderBrushPointerOver" Color="Transparent"/>
+                                                <SolidColorBrush x:Key="ButtonBorderBrushPressed" Color="Transparent"/>
+                                            </Button.Resources>
+                                            <FontIcon Glyph="&#xE8D5;" FontFamily="Segoe Fluent Icons" FontSize="16" Foreground="{x:Bind Brush, Mode=OneWay}"/>
+                                        </Button>
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+
+                <!-- Folder-page header: replaces FoldersBarBorder above (same
+                     Grid.Row="3" slot; ClipboardPanelWindow.
+                     UpdateFolderBarVisibility shows exactly one of the two at
+                     a time) for as long as a folder's page is open. PinnedList/
+                     HistoryList themselves need no separate copy for folder
+                     content; CurrentSource just points ApplyFilter at the
+                     open folder's own Items instead of the main history, so
+                     the same two ListViews keep rendering whatever's current,
+                     same look and pin/remove/reorder behavior either way. -->
+                <Border x:Name="FolderHeaderBorder"
+                        Grid.Row="3"
+                        Margin="0,8,0,0"
+                        Padding="6,6"
+                        CornerRadius="10"
+                        BorderThickness="1"
+                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                        Background="{ThemeResource LayerOnAcrylicFillColorDefaultBrush}"
+                        Visibility="Collapsed">
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Click="OnFolderBackClicked"
+                                Content="&#xE72B;"
+                                FontFamily="{ThemeResource SymbolThemeFontFamily}"
+                                Style="{StaticResource IconChipButtonStyle}"
+                                ToolTipService.ToolTip="Back to all items"/>
+                        <!-- Tint set from code-behind (EnterFolder/
+                             RenameFolderAsync) to match the open folder's
+                             Brush; same glyph as the chip in FoldersBar
+                             above, for continuity between the chip and its
+                             page. -->
+                        <FontIcon x:Name="FolderHeaderIcon"
+                                  Grid.Column="1"
+                                  Glyph="&#xE8D5;"
+                                  FontFamily="Segoe Fluent Icons"
+                                  FontSize="14"
+                                  VerticalAlignment="Center"/>
+                        <TextBlock x:Name="FolderHeaderTitle"
+                                   Grid.Column="2"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"/>
+                    </Grid>
+                </Border>
+
+                <!-- Footer: matches the look of Windows 11's own Quick
+                     Settings footer (the volume/battery strip at the very
+                     bottom of that flyout), a plate that's visibly darker
+                     than the rest of the panel, separated by a hairline top
+                     border, flush with the panel's edges rather than
+                     inset like everything above it. LayerOnAcrylicFillColor-
+                     Default is the Fluent 2 token built specifically for
+                     "a distinct layer sitting on top of an Acrylic
+                     surface": unlike a fully opaque brush (which just
+                     paints a flat rectangle over the blur and reads as
+                     pasted-on), it's still translucent enough to
+                     participate in the same Acrylic material as the rest
+                     of the panel, so the footer reads as a subtly darker
+                     region of one continuous frosted surface instead of a
+                     separate solid block. The -10 left/right/bottom
+                     margins cancel Container's Padding="10" so it bleeds
+                     all the way to the window edge (DWM's rounded-corner
+                     clip then takes care of the bottom corners for free,
+                     same as the window itself). -->
+                <Border Grid.Row="4"
+                        Margin="-10,8,-10,-10"
+                        Padding="10"
+                        BorderThickness="0,1,0,0"
+                        BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                        Background="{ThemeResource LayerOnAcrylicFillColorDefaultBrush}">
+                    <Grid VerticalAlignment="Center">
+                        <TextBox x:Name="SearchBox"
+                                 TextChanged="OnSearchTextChanged"
+                                 PlaceholderText="Search clipboard items"
+                                 Padding="34,6,40,6"
+                                 CornerRadius="6"/>
+                        <FontIcon Glyph="&#xE721;"
+                                  FontSize="14"
+                                  Opacity="0.6"
+                                  Margin="12,0,0,0"
+                                  HorizontalAlignment="Left"
+                                  VerticalAlignment="Center"
+                                  IsHitTestVisible="False"/>
+
+                        <!-- Funnel-glyph filter button: overlaid on the
+                             TextBox's reserved right padding (see Padding
+                             above), same overlay approach as the search
+                             glyph on the left. Its MenuFlyout re-checks
+                             whichever option is currently active every time
+                             it opens (OnFilterFlyoutOpening) rather than
+                             tracking checked state in the XAML itself. -->
+                        <Button x:Name="FilterButton"
+                                Width="28"
+                                Height="28"
+                                Padding="0"
+                                Margin="0,0,5,0"
+                                CornerRadius="6"
+                                Background="Transparent"
+                                BorderThickness="0"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Center">
+                            <FontIcon x:Name="FilterGlyph"
+                                      Glyph="&#xE71C;"
+                                      FontSize="13"/>
+                            <Button.Flyout>
+                                <MenuFlyout Placement="Top" Opening="OnFilterFlyoutOpening">
+                                    <MenuFlyoutItem x:Name="FilterAllItem"
+                                                     Text="All items"
+                                                     Tag="All"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutItem x:Name="FilterTextItem"
+                                                     Text="Text only"
+                                                     Tag="Text"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutItem x:Name="FilterImageItem"
+                                                     Text="Images only"
+                                                     Tag="Image"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutItem x:Name="FilterPinnedItem"
+                                                     Text="Pinned"
+                                                     Tag="Pinned"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutSeparator/>
+                                    <MenuFlyoutItem x:Name="FilterColorsItem"
+                                                     Text="Colors"
+                                                     Tag="Colors"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutItem x:Name="FilterGradientsItem"
+                                                     Text="Gradients"
+                                                     Tag="Gradients"
+                                                     Click="OnFilterModeClicked"/>
+                                    <MenuFlyoutItem x:Name="FilterColorsAndGradientsItem"
+                                                     Text="Colors + gradients"
+                                                     Tag="ColorsAndGradients"
+                                                     Click="OnFilterModeClicked"/>
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
